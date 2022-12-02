@@ -9,6 +9,8 @@ require (
 	github.com/google/go-cmp v0.5.6
 	github.com/onsi/ginkgo v1.14.0
 	github.com/onsi/gomega v1.19.0
+	github.com/openshift/api v0.0.0-20221103085154-ea838af1820e
+	github.com/openshift/client-go v0.0.0-00010101000000-000000000000
 	github.com/openshift/installer v0.16.1
 	github.com/sirupsen/logrus v1.4.2
 	github.com/spf13/cobra v0.0.5

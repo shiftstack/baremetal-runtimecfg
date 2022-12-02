@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/ghodss/yaml"
+	configv1 "github.com/openshift/api/config/v1"
+	openshiftcorev1 "github.com/openshift/client-go/config/clientset/versioned/typed/config/v1"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,6 +83,7 @@ type Node struct {
 	IngressConfig IngressConfig
 	EnableUnicast bool
 	Configs       *[]Node
+	BGPSpeaker    configv1.BGPSpeaker
 }
 
 func getDNSUpstreams(resolvConfPath string) (upstreams []string, err error) {
@@ -415,6 +418,11 @@ func getNodeConfig(kubeconfigPath, clusterConfigPath, resolvConfPath string, api
 	}
 	node.NonVirtualIP = nonVipAddr.IP.String()
 
+	node.BGPSpeaker, err = getBGPSpeaker(kubeconfigPath, node.NonVirtualIP)
+	if err != nil {
+		return node, err
+	}
+
 	node.EnableUnicast = false
 	if os.Getenv("ENABLE_UNICAST") == "yes" {
 		node.EnableUnicast = true
@@ -597,4 +605,55 @@ func PopulateNodeAddresses(kubeconfigPath string, node *Node) {
 			node.Cluster.NodeAddresses = append(node.Cluster.NodeAddresses, NodeAddress{Address: addr.String(), Name: name, Ipv6: ipv6})
 		}
 	}
+}
+
+func getBGPSpeaker(kubeconfigPath string, ip string) (configv1.BGPSpeaker, error) {
+	speaker := configv1.BGPSpeaker{}
+	speakers := []configv1.BGPSpeaker{}
+	config, err := utils.GetClientConfig("", kubeconfigPath)
+	if err != nil {
+		config, err = utils.GetClientConfig(localhostKubeApiServerUrl, kubeconfigPath)
+		// using the local kubeapi URL if the VIP is not available yet
+		if err != nil {
+			log.Errorf("Failed to build client config: %s", err)
+			return speaker, err
+		}
+	}
+
+	clientset, err := openshiftcorev1.NewForConfig(config)
+	if err != nil {
+		log.Errorf("Failed to create client: %s", err)
+		return speaker, err
+	}
+	infra, err := clientset.Infrastructures().Get(context.TODO(), "cluster", metav1.GetOptions{})
+	if err != nil {
+		log.Errorf("Failed to get infrastructure: %s", err)
+		return speaker, err
+	}
+	switch infra.Spec.PlatformSpec.Type {
+	case configv1.OpenStackPlatformType:
+		if infra.Spec.PlatformSpec.OpenStack.ControlPlaneLoadBalancer.ControlPlaneLoadBalancerType != "BGP" {
+			return speaker, fmt.Errorf("load balancer type is not set to BGP")
+		}
+		controlPlaneLBConfig := infra.Spec.PlatformSpec.OpenStack.ControlPlaneLoadBalancer
+		for _, speaker := range controlPlaneLBConfig.BGP.Speakers {
+			_, subnet, err := net.ParseCIDR(speaker.SubnetCIDR)
+			if err != nil {
+				return speaker, err
+			}
+			ipAddr := net.ParseIP(ip)
+			if subnet.Contains(ipAddr) {
+				speakers = append(speakers, speaker)
+			}
+		}
+		if len(speakers) == 0 {
+			return speaker, fmt.Errorf("no BGP speaker found for IP %s", ip)
+		}
+		// for now we only support one speaker but it'll change later
+		if len(speakers) > 1 {
+			return speaker, fmt.Errorf("multiple BGP speakers found for IP %s", ip)
+		}
+	}
+	speaker = speakers[0]
+	return speaker, nil
 }
