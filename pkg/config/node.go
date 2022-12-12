@@ -14,7 +14,6 @@ import (
 
 	"github.com/ghodss/yaml"
 	configv1 "github.com/openshift/api/config/v1"
-	openshiftcorev1 "github.com/openshift/client-go/config/clientset/versioned/typed/config/v1"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -418,7 +417,7 @@ func getNodeConfig(kubeconfigPath, clusterConfigPath, resolvConfPath string, api
 	}
 	node.NonVirtualIP = nonVipAddr.IP.String()
 
-	node.BGPSpeaker, err = getBGPSpeaker(kubeconfigPath, node.NonVirtualIP)
+	node.BGPSpeaker, err = getBGPSpeaker(node.NonVirtualIP)
 	if err != nil {
 		return node, err
 	}
@@ -607,52 +606,56 @@ func PopulateNodeAddresses(kubeconfigPath string, node *Node) {
 	}
 }
 
-func getBGPSpeaker(kubeconfigPath string, ip string) (configv1.BGPSpeaker, error) {
+func getBGPSpeaker(ip string) (configv1.BGPSpeaker, error) {
+	yamlFile := "/config/cp-lb.yaml"
 	speaker := configv1.BGPSpeaker{}
 	speakers := []configv1.BGPSpeaker{}
-	config, err := utils.GetClientConfig("", kubeconfigPath)
-	if err != nil {
-		config, err = utils.GetClientConfig(localhostKubeApiServerUrl, kubeconfigPath)
-		// using the local kubeapi URL if the VIP is not available yet
-		if err != nil {
-			log.Errorf("Failed to build client config: %s", err)
-			return speaker, err
-		}
+
+	// test if FRR is enabled
+	if _, err := os.Stat(yamlFile); err != nil {
+		fmt.Println("FRR is disabled")
+		return speaker, nil
 	}
 
-	clientset, err := openshiftcorev1.NewForConfig(config)
+	var controlPlaneLBConfig configv1.ControlPlaneLoadBalancer
+	config, err := os.ReadFile(yamlFile)
 	if err != nil {
-		log.Errorf("Failed to create client: %s", err)
-		return speaker, err
+		return speaker, fmt.Errorf("failed to open control plane load balancer config: %v", err)
 	}
-	infra, err := clientset.Infrastructures().Get(context.TODO(), "cluster", metav1.GetOptions{})
-	if err != nil {
-		log.Errorf("Failed to get infrastructure: %s", err)
-		return speaker, err
+
+	if err := yaml.Unmarshal(config, &controlPlaneLBConfig); err != nil {
+		return speaker, fmt.Errorf("failed to unmarshal: %v", err)
 	}
-	switch infra.Spec.PlatformSpec.Type {
-	case configv1.OpenStackPlatformType:
-		if infra.Spec.PlatformSpec.OpenStack.ControlPlaneLoadBalancer.ControlPlaneLoadBalancerType != "BGP" {
-			return speaker, fmt.Errorf("load balancer type is not set to BGP")
+
+	if controlPlaneLBConfig.BGP == nil {
+		return speaker, fmt.Errorf("no BGP config found")
+	}
+	if controlPlaneLBConfig.BGP.Speakers == nil {
+		return speaker, fmt.Errorf("no BGP speakers found")
+	}
+	for _, s := range controlPlaneLBConfig.BGP.Speakers {
+		if s.SubnetCIDR == "" {
+			return speaker, fmt.Errorf("no subnet CIDR found")
 		}
-		controlPlaneLBConfig := infra.Spec.PlatformSpec.OpenStack.ControlPlaneLoadBalancer
-		for _, speaker := range controlPlaneLBConfig.BGP.Speakers {
-			_, subnet, err := net.ParseCIDR(speaker.SubnetCIDR)
-			if err != nil {
-				return speaker, err
-			}
-			ipAddr := net.ParseIP(ip)
-			if subnet.Contains(ipAddr) {
-				speakers = append(speakers, speaker)
-			}
+		_, subnet, err := net.ParseCIDR(s.SubnetCIDR)
+		// just for debug, remove me later
+		if subnet == nil {
+			return speaker, fmt.Errorf("subnet is nil")
 		}
-		if len(speakers) == 0 {
-			return speaker, fmt.Errorf("no BGP speaker found for IP %s", ip)
+		if err != nil {
+			return speaker, err
 		}
-		// for now we only support one speaker but it'll change later
-		if len(speakers) > 1 {
-			return speaker, fmt.Errorf("multiple BGP speakers found for IP %s", ip)
+		ipAddr := net.ParseIP(ip)
+		if subnet.Contains(ipAddr) {
+			speakers = append(speakers, s)
 		}
+	}
+	if len(speakers) == 0 {
+		return speaker, fmt.Errorf("no BGP speaker found for IP %s", ip)
+	}
+	// for now we only support one speaker but it'll change later
+	if len(speakers) > 1 {
+		return speaker, fmt.Errorf("multiple BGP speakers found for IP %s", ip)
 	}
 	speaker = speakers[0]
 	return speaker, nil
