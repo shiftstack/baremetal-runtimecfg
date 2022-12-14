@@ -10,7 +10,6 @@ require (
 	github.com/onsi/ginkgo v1.14.0
 	github.com/onsi/gomega v1.19.0
 	github.com/openshift/api v0.0.0-20221103085154-ea838af1820e
-	github.com/openshift/client-go v0.0.0-00010101000000-000000000000
 	github.com/openshift/installer v0.16.1
 	github.com/sirupsen/logrus v1.4.2
 	github.com/spf13/cobra v0.0.5
@@ -70,4 +69,4 @@ require (
 
 replace github.com/openshift/client-go => github.com/shiftstack/client-go v0.0.0-20221201191724-4d086ab2cde4
 
-replace github.com/openshift/api => github.com/shiftstack/api v0.0.0-20221203003222-27ae90479536
+replace github.com/openshift/api => github.com/shiftstack/api v0.0.0-20221214020534-aa181038a087
